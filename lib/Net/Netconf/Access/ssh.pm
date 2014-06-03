@@ -8,6 +8,7 @@ use Net::Netconf::Access;
 use Net::Netconf::Constants;
 use Carp;
 use File::Which;
+use Net::OpenSSH;
 our $VERSION ='0.01';
 
 use vars qw(@ISA);
