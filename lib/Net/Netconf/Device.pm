@@ -194,9 +194,29 @@ sub send_and_recv_hello
 {
     my($self) = shift;
     my $msg;
-    my $conn = $self->{'conn_obj'};
-    my $traceobj = $self->{'trace_obj'};
+    my $conn 		= $self->{'conn_obj'};
+    my $traceobj 	= $self->{'trace_obj'};
     my @server_capabilities;
+
+    ## Read server capabilities
+	my $server_cap = $self->read_rpc( Net::Netconf::Constants::NC_HELLO_TAG );
+	
+	## Remove everything before hello tag
+	my @splitted  = split( /\<hello\>/,$server_cap);
+	$self->report_error(1, 'unable to find hello tag ') if ( not defined $splitted[1] );
+	$server_cap = "<hello>".$splitted[1];
+
+	eval {
+        $self->{'sax_parser'}->parse_string($server_cap);
+	};
+
+    if ($@) {
+		$self->report_error(1, 'error in parsing server capability');
+	}
+	
+	# Now save the session-id and server capabilities
+    $self->{'session_id'} = $Net::Netconf::SAXHandler::session_id;
+    @{$self->{'server_capabilities'}} = @Net::Netconf::SAXHandler::parsed_cap;
 
     # Generate the client capability using the capabilities passed to it
     my $client_capability = <<EOF;
@@ -220,13 +240,15 @@ EOF
 </hello>
 EOF
 
-    # Send our capabilities to the Netconf server
-    # Get the server capability
-    my $server_cap = $self->send_and_recv_rpc($client_capability, 
-            Net::Netconf::Constants::NC_HELLO_TAG,
-            Net::Netconf::Constants::NC_STATE_HELLO_SENT,
-            Net::Netconf::Constants::NC_STATE_HELLO_RECVD);
-
+	# Send our capabilities to the Netconf server
+    unless ($conn->send($client_capability)) {
+        carp 'failed to send user request';
+        return;
+    };
+	
+	## Read our own message to clean the pipe
+	#  $self->read_rpc( Net::Netconf::Constants::NC_HELLO_TAG );
+    
     $self->{'conn_state'} = Net::Netconf::Constants::NC_STATE_CONN;
 
     # Tracing what is going on
@@ -237,26 +259,13 @@ Server capability received:
 $server_cap
 EOF
 
-    # Parse the server hello to extract the capabilities
- 
-     eval {
-        $self->{'sax_parser'}->parse_string($server_cap);
-};
-
-    if ($@) {
-    $self->report_error(1, 'error in parsing server capability');
- }
-
-    # Now save the session-id and server capabilities
-    $self->{'session_id'} = $Net::Netconf::SAXHandler::session_id;
-    @{$self->{'server_capabilities'}} = @Net::Netconf::SAXHandler::parsed_cap;
-
     # See if any errors were emitted and save them
     $self->{'found_rpc_errors'} = $Net::Netconf::SAXHandler::found_error;
     if ($self->{'found_rpc_errors'}) {
-       %{$self->{'rpc_errors'}} = (%Net::Netconf::SAXHandler::rpc_errors);
-   }
-    $self;
+		%{$self->{'rpc_errors'}} = (%Net::Netconf::SAXHandler::rpc_errors);
+	}
+    
+	return $self;
 }
 
 # This returns the server capability for Netconf session

@@ -16,7 +16,7 @@ use vars qw(@ISA);
 sub disconnect
 {
     my ($self) = shift;
-    $self->{'ssh_obj'}->hard_close();
+    $self->{'ssh_obj'}->soft_close();
 }
 
 sub start
@@ -25,72 +25,30 @@ sub start
     my $sshprog;
 
     # Get ssh port number if it exists
-	$self->{'port'} = (getservbyname('ssh', 'tcp'))[2] unless defined $self->{'port'};
-    $self->{'port'} = Net::Netconf::Constants::NC_DEFAULT_PORT unless ( defined $self->{'port'} or $self->{'server'} eq 'junoscript' );
+	$self->{'port'} 	= (getservbyname('ssh', 'tcp'))[2] unless defined $self->{'port'};
+    $self->{'port'} 	= Net::Netconf::Constants::NC_DEFAULT_PORT unless ( defined $self->{'port'} or $self->{'server'} eq 'junoscript' );
+    $self->{'server'} 	= 'netconf' unless $self->{'server'};
 
-    $self->{'server'} = 'netconf' unless $self->{'server'};
-
-    my $echostate = 'stty -echo;';
-    if (exists($self->{'sshprog'})) {
-        $sshprog = $self->{'sshprog'};
-    } else {
-        $sshprog = which('ssh');
-        if (defined($sshprog) && ($sshprog ne '')) {
-            chomp($sshprog);
-        } else {
-            croak "Could not find sshclient on the system";
-        }
-    }
-
-    # This implementation assumes OpenSSH.
-    my $command = $echostate . $sshprog . ' -l ' . 
-                  $self->{'login'} . ' -p ' . $self->{'port'} . 
-                  ' -s ' . $self->{'hostname'} . 
-                  ' ' . $self->{'server'};
-
-    # Create the Expect object
-    my $ssh = Expect->spawn($command); 
-    # Turn off logging to stdout
+    my $openssh  = Net::OpenSSH->new(
+						$self->{'hostname'},
+						user      	=> $self->{'login'},
+						password  	=> $self->{'password'},
+						port 		=> $self->{'port'},
+						master_opts => [-o => "ConnectTimeout=15", -o => "UserKnownHostsFile=/dev/null", -o => "StrictHostKeyChecking=no"],
+						master_stderr_discard => 1,
+					);
+					
+	$openssh->error and die "Unable to connect to remote host: " . $ssh->error;
+	
+	my ($pty, $pid) = $openssh->open2pty( { ssh_opts => '-s', }, $self->{'server'} );
+	# tty => 0 
+	my $ssh = Expect->init($pty);
+	
     $ssh->log_stdout(0);
     $ssh->log_file($self->out);
 
-    # Send our password or passphrase
-    if ($ssh->expect(10, 'password:', 'Password:', '(yes/no)?', '-re', 'passphrase.*:')) {
-	my $m_num = $ssh->match_number();
-	 
-        SWITCH: {
-	      if (($m_num == 1) || ($m_num == 2) || ($m_num == 4)) {
-	          print $ssh "$self->{'password'}\r"; 
-                  last SWITCH;
-	      }
-	      if ($m_num == 3) {
-                  # Host-key authenticity.
-                  print $ssh "yes\r";
-	          if ($ssh->expect(10, 'password:', 'Password:', '-re', 'passphrase.*:')) {
-		      print $ssh "$self->{'password'}\r";
-	          } 
-	          # After the yes/no option, expect the line: 'Warning: 
-	          # Permanently added <....> to the list of known hosts.' 
-	          $ssh->expect(10, 'known hosts.'); 
-	          last SWITCH;
-	      }
-	} # SWITCH   
-	# If password prompted second time, it means user has give invalid password
-        if ($ssh->expect(10, 'password:', 'Password:', '-re', 'passphrase.*:'))
-        {
-            print "Failed to login to $self->{'hostname'}\n";
-            $self->{'seen_eof'} = 1;
-        }
-    } 
-    else {
-	if ($ssh->expect(10, '-re', '<!(.*?)>')) {
-	    # Things are good. Do nothing.
-	} else {    
-	    $self->{'seen_eof'} = 1;
-	}
-    }
-
-    $self->{'ssh_obj'} = $ssh;
+	$self->{'openssh_obj'}	= $openssh;
+    $self->{'ssh_obj'} 		= $ssh;
     $self;
 }
 
